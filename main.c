@@ -207,7 +207,7 @@ static int PrintTaskData(void* args)
     return 0;
 }
 
-int main(int argc, char *argv[])
+int main__test(int argc, char *argv[])
 {
     // 创建线程池
     ThreadPool* pool = NULL;
