@@ -30,6 +30,7 @@ typedef struct StWorker
 {
     pthread_t threadId;
     struct QtpThreadPool* stThreadPool;
+    int isTerminated; //线程终止标志
     
     struct StWorker* prev;
     struct StWorker* next;    
@@ -70,7 +71,15 @@ void* ThreadCallBack(void* args)
         //  没有任务则阻塞等待
         while (worker->stThreadPool->waitingTasks == NULL)
         {
+           if (worker->isTerminated != 0) break;
            pthread_cond_wait(&worker->stThreadPool->cond, &worker->stThreadPool->mutex);
+        }
+        
+        // 线程中间退出
+        if (worker->isTerminated != 0)
+        {
+            pthread_mutex_unlock(&worker->stThreadPool->mutex);
+            pthread_exit(&worker->isTerminated);
         }
         
         StTask* task = worker->stThreadPool->waitingTasks;
@@ -119,6 +128,7 @@ int QtpThreadPoolCreate(struct QtpThreadPool** pool, int threadCnt)
             goto End;
         }
         worker->stThreadPool = threadPool;
+        worker->isTerminated = 0;
         LL_ADD(worker, worker->stThreadPool->workers);
         if (pthread_create(&worker->threadId, NULL, ThreadCallBack, worker) != 0)
         {
@@ -173,6 +183,7 @@ int QtpThreadPoolDestroy(QtpThreadPool* pool)
     return 0;
 }
 
+// 线程池任务调度
 int QtpThreadPoolRunTask(QtpThreadPool* pool, StTask* task)
 {
     assert(pool != NULL && task != NULL);
@@ -184,6 +195,25 @@ int QtpThreadPoolRunTask(QtpThreadPool* pool, StTask* task)
     
     // 唤醒空闲线程执行任务
     pthread_cond_signal(&pool->cond);
+    
+    pthread_mutex_unlock(&pool->mutex);
+}
+
+
+// 线程池各工作线程终止
+int QtpThreadPoolShutdown(QtpThreadPool* pool)
+{
+    assert(pool != NULL);
+    
+    pthread_mutex_lock(&pool->mutex);
+    
+    while (pool->workers != NULL)
+    {
+        pool->workers->isTerminated = 1;
+        pool->workers = pool->workers->next;
+    }
+    //广播通知线程池终止
+    pthread_cond_broadcast(&pool->cond);
     
     pthread_mutex_unlock(&pool->mutex);
 }
@@ -220,7 +250,10 @@ int main()
         QtpThreadPoolRunTask(pool, task);
     }
     
-    sleep(3);
+    // 等待一会，避免线程池有的线程还没执行完，就终止线程池, main 函数返回
+    sleep(1);
+    
+    QtpThreadPoolShutdown(pool);
     
     if (QtpThreadPoolDestroy(pool) == 0)
     {
